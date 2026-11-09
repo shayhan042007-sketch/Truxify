@@ -1,4 +1,4 @@
-/**
+﻿/**
  * @openapi
  * components:
  *   schemas:
@@ -64,58 +64,7 @@ import { checkEscrowHealth } from '../services/escrow.js';
 import logger from '../middleware/logger.js';
 import { createDefaultAggregator } from '../core/health/index.js';
 import { captureDebugException } from '../middleware/sentry.js';
-import express from 'express';
-import * as Sentry from '@sentry/node';
-import logger from '../middleware/logger.js';
 
-const router = express.Router();
-
-// ... existing health check routes ...
-
-/**
- * GET /api/health/sentry-debug
- * Triggers a test exception capture via Sentry for instrumentation verification.
- */
-router.get('/sentry-debug', async (req, res) => {
-  try {
-    const testError = new Error('Sentry Test Error from Truxify Node.js Backend');
-    
-    // Explicitly capture exception with Sentry if initialized
-    if (Sentry && typeof Sentry.captureException === 'function') {
-      const eventId = Sentry.captureException(testError, {
-        tags: {
-          endpoint: '/api/health/sentry-debug',
-          environment: process.env.NODE_ENV || 'development'
-        },
-        extra: {
-          timestamp: new Date().toISOString(),
-          requestedBy: req.ip
-        }
-      });
-
-      logger.info({ eventId }, 'Sentry debug test exception captured successfully');
-      
-      return res.status(200).json({
-        success: true,
-        message: 'Sentry test exception captured and sent successfully.',
-        sentryEventId: eventId
-      });
-    } else {
-      // Fallback if Sentry is not active in the current environment
-      logger.warn('Sentry is not initialized; test error logged locally.');
-      throw testError;
-    }
-  } catch (err) {
-    logger.error({ error: err.message }, 'Failed to process Sentry debug endpoint');
-    return res.status(500).json({
-      success: false,
-      error: 'Sentry SDK not configured or capture failed',
-      details: err.message
-    });
-  }
-});
-
-export default router;
 const router = express.Router();
 
 const DEFAULT_TIMEOUT_MS = 400;
@@ -142,7 +91,7 @@ async function checkSupabase() {
     );
     return error ? 'failed' : 'connected';
   } catch (err) {
-    logger.error({ event: 'HEALTH_SUPABASE_CHECK_FAILED', error: err?.message }, 'Supabase check failed');
+    logger.error({ event: 'HEALTH_SUPABASE_ERROR', error: err?.message }, '[health] Supabase check failed');
     return 'failed';
   }
 }
@@ -153,7 +102,7 @@ async function checkMongo() {
     await withTimeout(mongoDb.admin().ping());
     return 'connected';
   } catch (err) {
-    logger.error({ event: 'HEALTH_MONGODB_CHECK_FAILED', error: err?.message }, 'MongoDB check failed');
+    logger.error({ event: 'HEALTH_MONGO_ERROR', error: err?.message }, '[health] MongoDB check failed');
     return 'failed';
   }
 }
@@ -164,7 +113,7 @@ async function checkRedis() {
     const reply = await withTimeout(redisClient.ping());
     return reply === 'PONG' ? 'connected' : 'failed';
   } catch (err) {
-    logger.error({ event: 'HEALTH_REDIS_CHECK_FAILED', error: err?.message }, 'Redis check failed');
+    logger.error({ event: 'HEALTH_REDIS_ERROR', error: err?.message }, '[health] Redis check failed');
     return 'failed';
   }
 }
@@ -178,7 +127,7 @@ async function checkEscrow() {
     const result = await checkEscrowHealth();
     return result.status;
   } catch (err) {
-    logger.error({ event: 'HEALTH_ESCROW_CHECK_FAILED', error: err?.message || err }, 'checkEscrow failed');
+    logger.error({ event: 'HEALTH_ESCROW_ERROR', error: err?.message }, '[Health] checkEscrow failed');
     return 'failed';
   }
 }
@@ -196,22 +145,14 @@ const CRITICAL_UNHEALTHY_MONGO = new Set(['failed']);
  *   get:
  *     tags: [Health]
  *     summary: Full system health check
- *     description: Returns the status of all dependent services (Supabase, optional MongoDB telemetry, Redis, Firebase, Polygon). Returns 503 when a critical service fails.
+ *     description: Returns the status of all dependent services.
  *     security:
  *       - {}
  *     responses:
  *       200:
  *         description: All critical services healthy
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/HealthResponse'
  *       503:
  *         description: One or more critical services degraded
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/HealthResponse'
  */
 router.get('/', healthLimiter, async (req, res) => {
   try {
@@ -257,51 +198,11 @@ router.get('/', healthLimiter, async (req, res) => {
   }
 });
 
-/**
- * @openapi
- * /api/health/live:
- *   get:
- *     tags: [Health]
- *     summary: Kubernetes liveness probe
- *     description: Always returns 200 as long as the process is running. Does not check dependencies.
- *     security:
- *       - {}
- *     responses:
- *       200:
- *         description: Process is alive
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/LivenessResponse'
- */
 router.get('/live', healthLimiter, (req, res) => {
   logger.info({ event: 'HEALTH_LIVENESS_PROBE' }, 'Liveness probe accessed.');
   return res.json({ status: 'ok', uptime: process.uptime() });
 });
 
-/**
- * @openapi
- * /api/health/ready:
- *   get:
- *     tags: [Health]
- *     summary: Kubernetes readiness probe
- *     description: Returns 200 when Supabase is reachable and optional MongoDB telemetry is either reachable or disabled. Returns 503 if Supabase is unavailable or configured MongoDB is down.
- *     security:
- *       - {}
- *     responses:
- *       200:
- *         description: All critical services ready
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ReadinessResponse'
- *       503:
- *         description: One or more critical services not ready
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ReadinessResponse'
- */
 router.get('/ready', healthLimiter, async (req, res) => {
   const [supabaseStatus, mongoStatus, redisStatus] = await Promise.all([
     checkSupabase(),
@@ -328,30 +229,8 @@ router.get('/ready', healthLimiter, async (req, res) => {
   return res.status(200).json({ status: 'ready', services });
 });
 
-// ============================================================================
-// Centralized Health Aggregation Endpoint
-// ============================================================================
-
 const aggregator = createDefaultAggregator();
 
-/**
- * @openapi
- * /api/health/full:
- *   get:
- *     tags: [Health]
- *     summary: Centralized health aggregation for all distributed components
- *     description: >
- *       Returns a unified health response covering all major backend services
- *       including databases, message queues, ML engine, GraphQL gateway,
- *       WebSocket server, blockchain, and background workers.
- *     security:
- *       - {}
- *     responses:
- *       200:
- *         description: All critical services healthy
- *       503:
- *         description: One or more critical services degraded
- */
 router.get('/full', healthLimiter, async (req, res) => {
   try {
     const result = await aggregator.aggregate();
@@ -360,8 +239,8 @@ router.get('/full', healthLimiter, async (req, res) => {
     return res.status(httpStatus).json(result);
   } catch (err) {
     logger.error(
-      { event: 'HEALTH_AGGREGATED_CHECK_FAILED', requestId: req.requestId || req.id, error: err && err.message },
-      'Aggregated health check failed',
+      { event: 'HEALTH_AGGREGATION_ERROR', requestId: req.requestId || req.id, error: err && err.message },
+      '[health] Aggregated health check failed',
     );
     return res.status(500).json({
       status: 'unhealthy',
